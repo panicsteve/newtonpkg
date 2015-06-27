@@ -28,6 +28,18 @@
 #define kNotifyFlag					0x00000080
 #define kAutoCopyFlag				0x00000100
 
+// Object formats
+
+#define OBJECT_FORMAT_MASK			0x000000ff
+
+#define OBJECT_FORMAT_BINARY		0x00000040
+#define OBJECT_FORMAT_ARRAY			0x00000041
+#define OBJECT_FORMAT_FRAME			0x00000043
+
+// Classes
+
+#define NIL_CLASS					0x00000002
+
 typedef uint8_t Byte;
 typedef uint32_t ULong;
 typedef uint32_t Date;
@@ -86,6 +98,49 @@ struct RelocationSet
 };
 
 
+void print4CharCode(uint32_t code)
+{
+	uint8_t b1 = (code & 0xff000000) >> 24;
+	uint8_t b2 = (code & 0x00ff0000) >> 16;
+	uint8_t b3 = (code & 0x0000ff00) >> 8;
+	uint8_t b4 = (code & 0x000000ff);
+	
+	printf("%c%c%c%c", b1, b2, b3, b4);
+}
+
+
+void printRef(uint32_t ref)
+{
+	if ( (ref & 0x00000003) == 0x0 )
+	{
+		int32_t theInt = ref >> 2;
+		printf("  Integer: 0x%08X (%d)", theInt, theInt);
+	}
+	else if ( (ref & 0x00000003) == 0x1 )
+	{
+		printf("  Pointer: 0x%08X", ref >> 2);
+	}
+	else if ( (ref & 0xfff0000f) == 0xa )
+	{
+		uint16_t wc = (ref >> 4);
+		printf("  Character: 0x%04x", wc);
+	}
+	else if ( (ref & 0x00000003) == 0x2 )
+	{
+		printf("  Special: 0x%08X", ref >> 2);
+	}
+	else if ( (ref & 0x00000003) == 0x3 )
+	{
+		uint32_t table = (ref & 0xffff0000) >> 16;
+		uint32_t index = (ref & 0x0000ffff) >> 2;
+		
+		printf("  MagicPtr: table %u, index %u", table, index);
+	}
+	
+	printf("\n");
+}
+
+
 void printFlag(ULong flags, ULong bitmask, const char *flagName)
 {
 	if ( (flags & bitmask) != 0 )
@@ -111,37 +166,83 @@ void printWideString(uint8_t *s, unsigned int length)
 }
 
 
-void printRef(uint32_t ref)
+void printClass(uint32_t class)
 {
-	printf("%08X: ", ref);
+	printf("  Class: 0x%08X ", class);
 
-	if ( (ref & 0x00000003) == 0x0 )
+	if ( class == NIL_CLASS )
 	{
-		int32_t theInt = ref >> 2;
-		printf("Integer   0x%08X (%d)", theInt, theInt);
+		printf("(NIL)");
 	}
-	else if ( (ref & 0x00000003) == 0x1 )
+	else
 	{
-		printf("Pointer   0x%08X", ref >> 2);
-	}
-	else if ( (ref & 0xfff0000f) == 0xa )
-	{
-		uint16_t wc = (ref >> 4);
-		printf("Character 0x%04x", wc);
-	}
-	else if ( (ref & 0x00000003) == 0x2 )
-	{
-		printf("Special   0x%08X", ref >> 2);
-	}
-	else if ( (ref & 0x00000003) == 0x3 )
-	{
-		uint32_t table = (ref & 0xffff0000) >> 16;
-		uint32_t index = (ref & 0x0000ffff) >> 2;
-		
-		printf("MagicPtr  table %u, index %u", table, index);
 	}
 	
 	printf("\n");
+}
+
+
+uint8_t *printObject(uint8_t *p)
+{
+	uint32_t word1 = ntohl(*(uint32_t *)p);
+	uint32_t word2 = ntohl(*((uint32_t *)(p + 4)));
+	uint32_t word3 = ntohl(*((uint32_t *)(p + 8)));
+	
+	printf("----\n");
+	//printf("Object header: 0x%08X 0x%08X\n", word1, word2);
+	
+	if ( (word1 & OBJECT_FORMAT_MASK) == OBJECT_FORMAT_ARRAY )
+	{
+		uint32_t arraySize = (word1 & 0xffffff00) >> 8;
+		int alignment = word2 & 0x1;
+		
+		printf("Type: Array (0x%X (%u) bytes, %u byte aligned)\n", arraySize, arraySize, alignment ? 4 : 8);
+	
+		printClass(word3);
+
+		uint32_t word4 = ntohl(*((uint32_t *)(p + 12)));
+
+		printRef(word4);
+	
+		p += arraySize;
+	}
+	else if ( (word1 & OBJECT_FORMAT_MASK) == OBJECT_FORMAT_BINARY )
+	{
+		uint32_t binarySize = (word1 & 0xffffff00) >> 8;
+
+		printf("Type: Binary object (0x%X (%u) bytes)\n", binarySize, binarySize);
+
+		printClass(word3);
+
+		while ( (binarySize % 4) != 0 )
+		{
+			++binarySize;
+		}
+
+		p += binarySize;
+	}
+	else if ( (word1 & OBJECT_FORMAT_MASK) == OBJECT_FORMAT_FRAME )
+	{
+		uint32_t frameSize = (word1 & 0xffffff00) >> 8;
+		
+		printf("Type: Frame (0x%X (%u) bytes)\n", frameSize, frameSize);
+		
+		frameSize -= 8;
+		p += 8;
+		
+		while ( frameSize > 0 )
+		{
+			uint32_t word = ntohl(*((uint32_t *)(p)));
+			printRef(word);
+			p += 4;
+			frameSize -= 4;
+		}
+	}
+	else
+	{
+	}
+	
+	return p;
 }
 
 
@@ -155,6 +256,12 @@ int main(int argc, const char *argv[])
 	
 	const char *filename = argv[1];
 	FILE *fp = fopen(filename, "rb");
+	
+	if ( fp == NULL )
+	{
+		printf("Can't open %s\n", filename);
+		return 1;
+	}
 
 	fseek(fp, 0, SEEK_END);
 	fpos_t size = 0;
@@ -281,6 +388,8 @@ int main(int argc, const char *argv[])
 	
 	// Parts
 	
+	uint8_t *pkgData = (uint8_t *)&buffer[pkgdir->directorySize];
+	
 	struct PartEntry *partEntries = (struct PartEntry *)&buffer[sizeof(struct PackageDirectory)];
 	
 	for ( int partNum = 0; partNum < pkgdir->numParts; ++partNum )
@@ -292,6 +401,7 @@ int main(int argc, const char *argv[])
 		partEntry->offset = ntohl(partEntry->offset);
 		partEntry->size = ntohl(partEntry->size);
 		partEntry->flags = ntohl(partEntry->flags);
+		partEntry->type = ntohl(partEntry->type);
 		
 		printf("       Offset: 0x%08x (%u)\n", partEntry->offset, partEntry->offset);
 		printf("         Size: 0x%08x (%u)\n", partEntry->size, partEntry->size);
@@ -304,9 +414,21 @@ int main(int argc, const char *argv[])
 		printFlag(partEntry->flags, kPartAutoRemoveFlag, "kAutoRemoveFlag");
 		printFlag(partEntry->flags, kNotifyFlag, "kNotifyFlag");
 		printFlag(partEntry->flags, kAutoCopyFlag, "kAutoCopyFlag");
+		printf("\n");
 		
+		printf("         Type: '");
+		print4CharCode(partEntry->type);
+		printf("'\n");
+
 		printf("\n");
-		printf("\n");
+		
+		int i = partEntry->offset;
+		uint8_t *p = &pkgData[i];
+		
+		while ( p < (uint8_t *)&pkgData[i + partEntry->size] )
+		{
+			p = printObject(p);
+		}
 	}
 	
 	// Done
