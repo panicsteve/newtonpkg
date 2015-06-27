@@ -41,32 +41,48 @@ typedef struct InfoRefStruct
 
 struct PackageDirectory
 {
-	Byte    signature[8];
-	ULong   reserved1;
-	ULong   flags;
-	ULong   version;
+	Byte signature[8];
+	ULong reserved1;
+	ULong flags;
+	ULong version;
 	InfoRef copyright;
 	InfoRef name;
-	ULong   size;
-	Date    creationDate; /* Seconds since midnight Jan 4, 1904 */
-	ULong   reserved2;
-	ULong   reserved3;
-	ULong   directorySize;
-	ULong   numParts;
+	ULong size;
+	Date creationDate; /* Seconds since midnight Jan 4, 1904 */
+	ULong reserved2;
+	ULong reserved3;
+	ULong directorySize;
+	ULong numParts;
 	/* PartEntry parts[numParts]; */
 	/* Byte variableLengthData[]; */
 };
 
 struct PartEntry
 {
-	ULong    offset;
-	ULong    size;
-	ULong    size2;
-	ULong    type;
-	ULong    reserved1;
-	ULong    flags;
-	InfoRef  info;
-	ULong    reserved2;
+	ULong offset;
+	ULong size;
+	ULong size2;
+	ULong type;
+	ULong reserved1;
+	ULong flags;
+	InfoRef info;
+	ULong reserved2;
+};
+
+struct RelocationHeader
+{
+	ULong reserved;
+	ULong relocationSize;
+	ULong pageSize;
+	ULong numEntries;
+	ULong baseAddress;
+};
+
+struct RelocationSet
+{
+	UShort pageNumber;
+	UShort offsetCount;
+	/* Byte offsets[]; */
 };
 
 
@@ -89,6 +105,40 @@ void printWideString(uint8_t *s, unsigned int length)
 		wchar_t wc = (s[offset] << 8) | (s[offset + 1]);
 	
 		printf("%lc", wc);
+	}
+	
+	printf("\n");
+}
+
+
+void printRef(uint32_t ref)
+{
+	printf("%08X: ", ref);
+
+	if ( (ref & 0x00000003) == 0x0 )
+	{
+		int32_t theInt = ref >> 2;
+		printf("Integer   0x%08X (%d)", theInt, theInt);
+	}
+	else if ( (ref & 0x00000003) == 0x1 )
+	{
+		printf("Pointer   0x%08X", ref >> 2);
+	}
+	else if ( (ref & 0xfff0000f) == 0xa )
+	{
+		uint16_t wc = (ref >> 4);
+		printf("Character 0x%04x", wc);
+	}
+	else if ( (ref & 0x00000003) == 0x2 )
+	{
+		printf("Special   0x%08X", ref >> 2);
+	}
+	else if ( (ref & 0x00000003) == 0x3 )
+	{
+		uint32_t table = (ref & 0xffff0000) >> 16;
+		uint32_t index = (ref & 0x0000ffff) >> 2;
+		
+		printf("MagicPtr  table %u, index %u", table, index);
 	}
 	
 	printf("\n");
@@ -187,6 +237,12 @@ int main(int argc, const char *argv[])
 
 	printf("\n");
 	
+	if ( (pkgdir->flags & kRelocationFlag) != 0 )
+	{
+		printf("newtonpkg can't parse packages with relocation data yet.\n");
+		return 0;
+	}
+	
 	// Version
 
 	printf("      Version: 0x%08x (%u)\n", pkgdir->version, pkgdir->version);
@@ -195,17 +251,17 @@ int main(int argc, const char *argv[])
 
 	printf("    Copyright: ");
 	
-	uint8_t *s = &varData[pkgdir->copyright.offset];
+	uint8_t *wstr = &varData[pkgdir->copyright.offset];
 	
-	printWideString(s, pkgdir->copyright.length);
+	printWideString(wstr, pkgdir->copyright.length);
 	
 	// Name
 	
 	printf("         Name: ");
 	
-	s = &varData[pkgdir->name.offset];
+	wstr = &varData[pkgdir->name.offset];
 	
-	printWideString(s, pkgdir->name.length);
+	printWideString(wstr, pkgdir->name.length);
 	
 	// Size
 	
@@ -225,11 +281,13 @@ int main(int argc, const char *argv[])
 	
 	// Parts
 	
-	struct PartEntry *partEntry = (struct PartEntry *)&buffer[sizeof(struct PackageDirectory)];
-
-	for ( int part = 0; part < pkgdir->numParts; ++part )
+	struct PartEntry *partEntries = (struct PartEntry *)&buffer[sizeof(struct PackageDirectory)];
+	
+	for ( int partNum = 0; partNum < pkgdir->numParts; ++partNum )
 	{
-		printf("\nPart %d:\n", part);
+		printf("\nPart %d:\n", partNum);
+		
+		struct PartEntry *partEntry = &partEntries[partNum];
 		
 		partEntry->offset = ntohl(partEntry->offset);
 		partEntry->size = ntohl(partEntry->size);
@@ -248,8 +306,7 @@ int main(int argc, const char *argv[])
 		printFlag(partEntry->flags, kAutoCopyFlag, "kAutoCopyFlag");
 		
 		printf("\n");
-		
-		++part;
+		printf("\n");
 	}
 	
 	// Done
