@@ -39,6 +39,7 @@
 // Classes
 
 #define NIL_CLASS					0x00000002
+#define SYMBOL_CLASS				0x00055552
 
 typedef uint8_t Byte;
 typedef uint32_t ULong;
@@ -155,7 +156,7 @@ void printWideString(uint8_t *s, unsigned int length)
 	if ( length == 0 )
 		return;
 		
-	for ( int offset = 0; offset < length; offset += 2 )
+	for ( int offset = 0; offset < length - 2; offset += 2 )
 	{
 		wchar_t wc = (s[offset] << 8) | (s[offset + 1]);
 	
@@ -168,14 +169,15 @@ void printWideString(uint8_t *s, unsigned int length)
 
 void printClass(uint32_t class)
 {
-	printf("  Class: 0x%08X ", class);
+	printf("Class: 0x%08X ", class);
 
 	if ( class == NIL_CLASS )
 	{
 		printf("(NIL)");
 	}
-	else
+	else if ( class == SYMBOL_CLASS )
 	{
+		printf("(Symbol)");
 	}
 	
 	printf("\n");
@@ -188,8 +190,7 @@ uint8_t *printObject(uint8_t *p)
 	uint32_t word2 = ntohl(*((uint32_t *)(p + 4)));
 	uint32_t word3 = ntohl(*((uint32_t *)(p + 8)));
 	
-	printf("----\n");
-	//printf("Object header: 0x%08X 0x%08X\n", word1, word2);
+//	printf("Object header (0x%08X 0x%08X)\n", word1, word2);
 	
 	if ( (word1 & OBJECT_FORMAT_MASK) == OBJECT_FORMAT_ARRAY )
 	{
@@ -210,10 +211,28 @@ uint8_t *printObject(uint8_t *p)
 	{
 		uint32_t binarySize = (word1 & 0xffffff00) >> 8;
 
-		printf("Type: Binary object (0x%X (%u) bytes)\n", binarySize, binarySize);
+		printf("Type: Binary object\n");
+		printf("Size: 0x%X bytes (%u)\n", binarySize, binarySize);
 
 		printClass(word3);
 
+		if ( word3 == SYMBOL_CLASS )
+		{
+			// Decode and print the symbol
+			
+			printf("Symbol: '");
+			
+			unsigned char *symbol = p + 16;
+			for ( int i = 0; i < binarySize - 17; ++i )
+			{
+				printf("%c", symbol[i]);
+			}
+			
+			printf("'\n");
+		}
+
+		// Padding
+		
 		while ( (binarySize % 4) != 0 )
 		{
 			++binarySize;
@@ -225,7 +244,8 @@ uint8_t *printObject(uint8_t *p)
 	{
 		uint32_t frameSize = (word1 & 0xffffff00) >> 8;
 		
-		printf("Type: Frame (0x%X (%u) bytes)\n", frameSize, frameSize);
+		printf("Type: Frame\n");
+		printf("Size: 0x%X bytes (%u)\n", frameSize, frameSize);
 		
 		frameSize -= 8;
 		p += 8;
@@ -241,7 +261,8 @@ uint8_t *printObject(uint8_t *p)
 	else
 	{
 	}
-	
+
+	printf("\n");
 	return p;
 }
 
@@ -422,12 +443,15 @@ int main(int argc, const char *argv[])
 
 		printf("\n");
 		
-		int i = partEntry->offset;
-		uint8_t *p = &pkgData[i];
+		uint8_t *p = &pkgData[partEntry->offset];
+		int offset = pkgdir->directorySize;
 		
-		while ( p < (uint8_t *)&pkgData[i + partEntry->size] )
+		while ( p < (uint8_t *)&pkgData[partEntry->offset + partEntry->size] )
 		{
+			uint8_t *oldp = p;
+			printf("[file offset %08X]\n", offset);
 			p = printObject(p);
+			offset += p - oldp;
 		}
 	}
 	
